@@ -20,12 +20,12 @@ parser.add_argument('data_path', type=str, help='Path to dataset')
 parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'imagenet', 'svhn', 'stl10'], help='Choose between Cifar10/100 and ImageNet.')
 parser.add_argument('--arch', metavar='ARCH', default='resnet18', choices=model_names, help='model architecture: ' + ' | '.join(model_names) + ' (default: resnext29_8_64)')
 # Optimization options
-parser.add_argument('--epochs', type=int, default=300, help='Number of epochs to train.')
+parser.add_argument('--epochs', type=int, default=200, help='Number of epochs to train.')
 parser.add_argument('--batch_size', type=int, default=128, help='Batch size.')
 parser.add_argument('--learning_rate', type=float, default=0.1, help='The Learning Rate.')
 parser.add_argument('--momentum', type=float, default=0.9, help='Momentum.')
 parser.add_argument('--decay', type=float, default=0.0005, help='Weight decay (L2 penalty).')
-parser.add_argument('--schedule', type=int, nargs='+', default=[150, 225], help='Decrease learning rate at these epochs.')
+parser.add_argument('--schedule', type=int, nargs='+', default=[1, 60, 120, 160], help='Decrease learning rate at these epochs.')
 parser.add_argument('--gammas', type=float, nargs='+', default=[0.1, 0.1], help='LR is multiplied by gamma on schedule, number of gammas should be equal to schedule')
 # Checkpoints
 parser.add_argument('--print_freq', default=200, type=int, metavar='N', help='print frequency (default: 200)')
@@ -40,9 +40,9 @@ parser.add_argument('--workers', type=int, default=2, help='number of data loadi
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 #compress rate
 parser.add_argument('--rate', type=float, default=0.9, help='compress rate of model')
-parser.add_argument('--layer_begin', type=int, default=1,  help='compress layer of model')
+parser.add_argument('--layer_begin', type=int, default=0,  help='compress layer of model')
 parser.add_argument('--layer_end', type=int, default=1,  help='compress layer of model')
-parser.add_argument('--layer_inter', type=int, default=1,  help='compress layer of model')
+parser.add_argument('--layer_inter', type=int, default=3,  help='compress layer of model')
 parser.add_argument('--epoch_prune', type=int, default=1,  help='compress layer of model')
 parser.add_argument('--use_state_dict', dest='use_state_dict', action='store_true', help='use state dcit or not')
 
@@ -230,9 +230,9 @@ def train(train_loader, model, criterion, optimizer, epoch, log):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data[0], input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
+        losses.update(loss.data, input.size(0))
+        top1.update(prec1, input.size(0))
+        top5.update(prec5, input.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -276,9 +276,9 @@ def validate(val_loader, model, criterion, log):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data[0], input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
+        losses.update(loss.data, input.size(0))
+        top1.update(prec1, input.size(0))
+        top5.update(prec5, input.size(0))
 
     print_log('  **Test** Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1, top5=top5, error1=100-top1.avg), log)
 

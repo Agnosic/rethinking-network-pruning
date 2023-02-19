@@ -16,13 +16,14 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 
-from vgg import slimmingvgg as vgg11
 from compute_flops import count_model_param_flops
-
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
+
+import models
+
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
@@ -32,6 +33,7 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet18',
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: resnet18)')
+parser.add_argument('--model',default='',type=str,help='Model names')
 parser.add_argument('-j', '--workers', default=25, type=int, metavar='N',
                     help='number of data loading workers (default: 25)')
 parser.add_argument('--epochs', default=90, type=int, metavar='N',
@@ -60,15 +62,10 @@ parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
                     help='url used to set up distributed training')
 parser.add_argument('--dist-backend', default='gloo', type=str,
                     help='distributed backend')
-parser.add_argument('--s', type=float, default=0,
-                    help='scale sparse rate (default: 0)')
 parser.add_argument('--save', default='.', type=str, metavar='PATH',
-                    help='path to save model (default: current directory)')
-parser.add_argument('--scratch', default='', type=str, metavar='PATH',
-                    help='the PATH to the pruned model')
+                    help='path to save prune model (default: current directory)')
 
 best_prec1 = 0
-
 
 def main():
     global args, best_prec1
@@ -84,11 +81,40 @@ def main():
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size)
 
-    model = vgg11()
+    if args.model == 'thinet-70':
+        model = models.thinet70()
+        model_ref = models.resnet50_official()
 
-    if args.scratch:
-        checkpoint = torch.load(args.scratch)
-        model = vgg11(pretrained=False, config=checkpoint['cfg'])
+    if args.model == 'thinet-conv':
+        model = models.thinet_conv()
+        model_ref = models.vgg_official()
+    elif args.model == 'thinet-gap':
+        model = models.thinet_gap()
+        model_ref = models.vgg_official()
+    elif args.model == 'thinet-tiny':
+        model = models.thinet_tiny()
+        model_ref = models.vgg_official()
+    elif args.model == 'thinet-30':
+        model = models.thinet30()
+        model_ref = models.resnet50_official()
+    elif args.model == 'thinet-50':
+        model = models.thinet50()
+        model_ref = models.resnet50_official()
+    elif args.model == 'thinet-70':
+        model = models.thinet70()
+        model_ref = models.resnet50_official()
+
+    ###########################################################################################
+    flops_std = count_model_param_flops(model_ref)
+    flops_small = count_model_param_flops(model)
+    ratio = flops_std / flops_small
+    if ratio >= 2:
+        args.epochs = 180
+        stepz_size = 60
+    else:
+        args.epochs = int(90.*flops_std / flops_small)
+        step_size = int(args.epochs / 3)
+    ###########################################################################################
 
     if not args.distributed:
         if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
@@ -167,7 +193,7 @@ def main():
         adjust_learning_rate(optimizer, epoch, step_size)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args.s)
+        train(train_loader, model, criterion, optimizer, epoch)
 
         # evaluate on validation set
         prec1 = validate(val_loader, model, criterion)
@@ -183,20 +209,7 @@ def main():
             'optimizer' : optimizer.state_dict(),
         }, is_best, args.save)
 
-def updateBN(model, sparsity):
-    for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
-            m.weight.grad.data.add_(sparsity * torch.sign(m.weight.data))
-
-def BN_grad_zero(model):
-    for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
-            mask = (m.weight.data != 0)
-            mask = mask.float().cuda()
-            m.weight.grad.data.mul_(mask)
-            m.bias.grad.data.mul_(mask)
-
-def train(train_loader, model, criterion, optimizer, epoch, sparsity=0):
+def train(train_loader, model, criterion, optimizer, epoch):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -221,16 +234,13 @@ def train(train_loader, model, criterion, optimizer, epoch, sparsity=0):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data, input.size(0))
-        top1.update(prec1, input.size(0))
-        top5.update(prec5, input.size(0))
+        losses.update(loss.data[0], input.size(0))
+        top1.update(prec1[0], input.size(0))
+        top5.update(prec5[0], input.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
-        if sparsity != 0:
-            updateBN(model, sparsity)
-        BN_grad_zero(model)
         optimizer.step()
 
         # measure elapsed time
@@ -268,9 +278,9 @@ def validate(val_loader, model, criterion):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data, input.size(0))
-        top1.update(prec1, input.size(0))
-        top5.update(prec5, input.size(0))
+        losses.update(loss.data[0], input.size(0))
+        top1.update(prec1[0], input.size(0))
+        top5.update(prec5[0], input.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)

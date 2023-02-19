@@ -28,6 +28,9 @@ parser.add_argument('-j', '--workers', default=20, type=int, metavar='N',
                     help='number of data loading workers (default: 20)')
 parser.add_argument('-v', default='A', type=str, 
                     help='version of the pruned model')
+parser.add_argument('--model', default='', type=str, metavar='PATH',
+                    help='the PATH to the pruned model')
+
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -35,10 +38,13 @@ args.cuda = not args.no_cuda and torch.cuda.is_available()
 if not os.path.exists(args.save):
     os.makedirs(args.save)
 
-model = resnet34(pretrained=True)
+model = resnet34(pretrained=False)
 model = torch.nn.DataParallel(model).cuda()
 cudnn.benchmark = True
 
+if args.model:
+    checkpoint = torch.load(args.model)
+    model = resnet34(cfg=checkpoint['cfg'])
 print('Pre-processing Successful!')
 
 def accuracy(output, target, topk=(1,)):
@@ -90,9 +96,9 @@ def test(model):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data[0], input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
+        losses.update(loss.data, input.size(0))
+        top1.update(prec1, input.size(0))
+        top5.update(prec5, input.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)

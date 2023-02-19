@@ -14,6 +14,8 @@ import torch.optim as optim
 import torch.utils.data as data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+from sklearn.model_selection import train_test_split
+
 
 import models.cifar as models
 from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p, savefig
@@ -51,12 +53,12 @@ parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 # Architecture
-parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet20',
+parser.add_argument('--arch', '-a', metavar='ARCH', default='vgg19_bn',
                     choices=model_names,
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: resnet18)')
-parser.add_argument('--depth', type=int, default=29, help='Model depth.')
+parser.add_argument('--depth', type=int, default=19, help='Model depth.')
 parser.add_argument('--cardinality', type=int, default=8, help='Model cardinality (group).')
 parser.add_argument('--widen-factor', type=int, default=4, help='Widen factor. 4 -> 64, 8 -> 128, ...')
 parser.add_argument('--growthRate', type=int, default=12, help='Growth rate for DenseNet.')
@@ -67,6 +69,8 @@ parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 
 parser.add_argument('--save_dir', default='results/', type=str)
+parser.add_argument('--data-size', default=50000, type=int,
+                    help='data size')
 
 args = parser.parse_args()
 state = {k: v for k, v in args._get_kwargs()}
@@ -114,8 +118,20 @@ def main():
         dataloader = datasets.CIFAR100
         num_classes = 100
 
+
+
     trainset = dataloader(root='./data', train=True, download=True, transform=transform_train)
-    trainloader = data.DataLoader(trainset, batch_size=args.train_batch, shuffle=True, num_workers=args.workers)
+
+    targets = trainset.targets
+
+    import numpy as np
+
+    train_idx, _ = train_test_split(
+        np.arange(len(targets)),
+        train_size=args.data_size,
+        shuffle=True,
+        stratify=targets)
+    trainloader = data.DataLoader(trainset, batch_size=args.train_batch, shuffle=True, num_workers=args.workers, sampler=torch.utils.data.SubsetRandomSampler(train_idx))
 
     testset = dataloader(root='./data', train=False, download=False, transform=transform_test)
     testloader = data.DataLoader(testset, batch_size=args.test_batch, shuffle=False, num_workers=args.workers)
@@ -238,9 +254,9 @@ def train(trainloader, model, criterion, optimizer, epoch, use_cuda):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(outputs.data, targets.data, topk=(1, 5))
-        losses.update(loss.data[0], inputs.size(0))
-        top1.update(prec1[0], inputs.size(0))
-        top5.update(prec5[0], inputs.size(0))
+        losses.update(loss.data, inputs.size(0))
+        top1.update(prec1, inputs.size(0))
+        top5.update(prec5, inputs.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -295,9 +311,9 @@ def test(testloader, model, criterion, epoch, use_cuda):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(outputs.data, targets.data, topk=(1, 5))
-        losses.update(loss.data[0], inputs.size(0))
-        top1.update(prec1[0], inputs.size(0))
-        top5.update(prec5[0], inputs.size(0))
+        losses.update(loss.data, inputs.size(0))
+        top1.update(prec1, inputs.size(0))
+        top5.update(prec5, inputs.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)

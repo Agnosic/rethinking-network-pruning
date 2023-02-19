@@ -15,6 +15,8 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+from sklearn.model_selection import train_test_split
+
 
 from vgg import slimmingvgg as vgg11
 
@@ -63,6 +65,8 @@ parser.add_argument('--s', type=float, default=0,
                     help='scale sparse rate (default: 0)')
 parser.add_argument('--save', default='.', type=str, metavar='PATH',
                     help='path to save model (default: current directory)')
+parser.add_argument('--data-size', default=50000, type=int,
+                    help='data size')
 
 best_prec1 = 0
 
@@ -130,10 +134,19 @@ def main():
             normalize,
         ]))
 
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    else:
-        train_sampler = None
+
+
+    # if args.distributed:
+        # train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    # else:
+    targets = train_dataset.targets
+
+    train_idx, _ = train_test_split(
+        np.arange(len(targets)),
+        train_size=args.data_size,
+        shuffle=True,
+        stratify=targets)
+    train_sampler = torch.utils.data.SubsetRandomSampler(train_idx)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
@@ -213,9 +226,9 @@ def train(train_loader, model, criterion, optimizer, epoch, sparsity=0):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data[0], input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
+        losses.update(loss.data, input.size(0))
+        top1.update(prec1, input.size(0))
+        top5.update(prec5, input.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -260,9 +273,9 @@ def validate(val_loader, model, criterion):
 
         # measure accuracy and record loss
         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        losses.update(loss.data[0], input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
+        losses.update(loss.dat, input.size(0))
+        top1.update(prec1, input.size(0))
+        top5.update(prec5, input.size(0))
 
         # measure elapsed time
         batch_time.update(time.time() - end)

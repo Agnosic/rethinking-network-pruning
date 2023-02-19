@@ -1,6 +1,6 @@
 import argparse
-import numpy as np
 import os
+import numpy as np
 import shutil
 import time
 
@@ -15,9 +15,9 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+from sklearn.model_selection import train_test_split
 
-from vgg import slimmingvgg as vgg11
-from compute_flops import count_model_param_flops
+from resnet import resnet34
 
 
 model_names = sorted(name for name in models.__dict__
@@ -27,20 +27,20 @@ model_names = sorted(name for name in models.__dict__
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
-parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet18',
+parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet34',
                     choices=model_names,
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: resnet18)')
 parser.add_argument('-j', '--workers', default=25, type=int, metavar='N',
                     help='number of data loading workers (default: 25)')
-parser.add_argument('--epochs', default=90, type=int, metavar='N',
+parser.add_argument('--epochs', default=20, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=256, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
-parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
                     metavar='LR', help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
@@ -63,17 +63,15 @@ parser.add_argument('--dist-backend', default='gloo', type=str,
 parser.add_argument('--s', type=float, default=0,
                     help='scale sparse rate (default: 0)')
 parser.add_argument('--save', default='.', type=str, metavar='PATH',
-                    help='path to save model (default: current directory)')
-parser.add_argument('--scratch', default='', type=str, metavar='PATH',
-                    help='the PATH to the pruned model')
+                    help='path to save prune model (default: current directory)')
+parser.add_argument('--data-size', default=50000, type=int,
+                    help='data size')
 
 best_prec1 = 0
-
 
 def main():
     global args, best_prec1
     args = parser.parse_args()
-    print(args)
 
     args.distributed = args.world_size > 1
 
@@ -84,11 +82,7 @@ def main():
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size)
 
-    model = vgg11()
-
-    if args.scratch:
-        checkpoint = torch.load(args.scratch)
-        model = vgg11(pretrained=False, config=checkpoint['cfg'])
+    model = resnet34(pretrained=False)
 
     if not args.distributed:
         if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
@@ -99,6 +93,7 @@ def main():
     else:
         model.cuda()
         model = torch.nn.parallel.DistributedDataParallel(model)
+
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
@@ -143,6 +138,15 @@ def main():
     else:
         train_sampler = None
 
+    targets = train_dataset.targets
+
+    train_idx, _ = train_test_split(
+        np.arange(len(targets)),
+        train_size=args.data_size,
+        shuffle=True,
+        stratify=targets)
+    train_sampler = torch.utils.data.SubsetRandomSampler(train_idx)
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
@@ -161,16 +165,20 @@ def main():
         validate(val_loader, model, criterion)
         return
 
+    history_score = np.zeros((args.epochs + 1, 1))
+    np.savetxt(os.path.join(args.save, 'record.txt'), history_score, fmt = '%10.5f', delimiter=',')
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        adjust_learning_rate(optimizer, epoch, step_size)
+        adjust_learning_rate(optimizer, epoch)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args.s)
+        train(train_loader, model, criterion, optimizer, epoch)
 
         # evaluate on validation set
         prec1 = validate(val_loader, model, criterion)
+        history_score[epoch] = prec1
+        np.savetxt(os.path.join(args.save, 'record.txt'), history_score, fmt = '%10.5f', delimiter=',')
 
         # remember best prec@1 and save checkpoint
         is_best = prec1 > best_prec1
@@ -183,20 +191,10 @@ def main():
             'optimizer' : optimizer.state_dict(),
         }, is_best, args.save)
 
-def updateBN(model, sparsity):
-    for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
-            m.weight.grad.data.add_(sparsity * torch.sign(m.weight.data))
+    history_score[-1] = best_prec1
+    np.savetxt(os.path.join(args.save, 'record.txt'), history_score, fmt = '%10.5f', delimiter=',')
 
-def BN_grad_zero(model):
-    for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
-            mask = (m.weight.data != 0)
-            mask = mask.float().cuda()
-            m.weight.grad.data.mul_(mask)
-            m.bias.grad.data.mul_(mask)
-
-def train(train_loader, model, criterion, optimizer, epoch, sparsity=0):
+def train(train_loader, model, criterion, optimizer, epoch):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -228,9 +226,6 @@ def train(train_loader, model, criterion, optimizer, epoch, sparsity=0):
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
-        if sparsity != 0:
-            updateBN(model, sparsity)
-        BN_grad_zero(model)
         optimizer.step()
 
         # measure elapsed time
@@ -290,10 +285,10 @@ def validate(val_loader, model, criterion):
 
     return top1.avg
 
-def save_checkpoint(state, is_best, filepath, name='checkpoint.pth.tar'):
-    torch.save(state, os.path.join(filepath, name))
+def save_checkpoint(state, is_best, filepath):
+    torch.save(state, os.path.join(filepath, 'checkpoint.pth.tar'))
     if is_best:
-        shutil.copyfile(os.path.join(filepath, name), os.path.join(filepath, 'model_best.pth.tar'))
+        shutil.copyfile(os.path.join(filepath, 'checkpoint.pth.tar'), os.path.join(filepath, 'model_best.pth.tar'))
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -312,9 +307,9 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-def adjust_learning_rate(optimizer, epoch, step_size=30):
+def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    lr = args.lr * (0.1 ** (epoch // step_size))
+    lr = args.lr * (0.1 ** (epoch // 30))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
