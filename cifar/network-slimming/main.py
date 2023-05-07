@@ -83,7 +83,7 @@ if args.dataset == 'cifar10':
         stratify=targets)
     train_loader = torch.utils.data.DataLoader(
         data_train,
-        batch_size=args.batch_size, shuffle=True, sampler=torch.utils.data.SubsetRandomSampler(train_idx), **kwargs)
+        batch_size=args.batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_idx), **kwargs)
     test_loader = torch.utils.data.DataLoader(
         datasets.CIFAR10('./data.cifar10', train=False, transform=transforms.Compose([
             transforms.ToTensor(),
@@ -110,7 +110,7 @@ else:
         stratify=targets)
     train_loader = torch.utils.data.DataLoader(
         data_train,
-        batch_size=args.batch_size, shuffle=True, sampler=torch.utils.data.SubsetRandomSampler(train_idx), **kwargs)
+        batch_size=args.batch_size, sampler=torch.utils.data.SubsetRandomSampler(train_idx), **kwargs)
     test_loader = torch.utils.data.DataLoader(
         datasets.CIFAR100('./data.cifar100', train=False, transform=transforms.Compose([
             transforms.ToTensor(),

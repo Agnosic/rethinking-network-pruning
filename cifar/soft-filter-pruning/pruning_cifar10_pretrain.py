@@ -9,6 +9,7 @@ import torchvision.transforms as transforms
 from utils import AverageMeter, RecorderMeter, time_string, convert_secs2time
 import models
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 
 model_names = sorted(name for name in models.__dict__
@@ -45,6 +46,8 @@ parser.add_argument('--layer_end', type=int, default=1,  help='compress layer of
 parser.add_argument('--layer_inter', type=int, default=3,  help='compress layer of model')
 parser.add_argument('--epoch_prune', type=int, default=1,  help='compress layer of model')
 parser.add_argument('--use_state_dict', dest='use_state_dict', action='store_true', help='use state dcit or not')
+parser.add_argument('--data-size', default=50000, type=int,
+                    help='data size')
 
 
 args = parser.parse_args()
@@ -115,8 +118,16 @@ def main():
     else:
         assert False, 'Do not support dataset : {}'.format(args.dataset)
 
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True,
-                                                 num_workers=args.workers, pin_memory=True)
+    targets = train_data.targets
+
+    train_idx, _ = train_test_split(
+        np.arange(len(targets)),
+        train_size=args.data_size,
+        shuffle=True,
+        stratify=targets)
+
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size,
+                                                 num_workers=args.workers, pin_memory=True, sampler=torch.utils.data.SubsetRandomSampler(train_idx))
     test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size, shuffle=False,
                                                 num_workers=args.workers, pin_memory=True)
 
@@ -219,7 +230,7 @@ def train(train_loader, model, criterion, optimizer, epoch, log):
         data_time.update(time.time() - end)
 
         if args.use_cuda:
-            target = target.cuda(async=True)
+            target = target.cuda()
             input = input.cuda()
         input_var = torch.autograd.Variable(input)
         target_var = torch.autograd.Variable(target)
@@ -265,7 +276,7 @@ def validate(val_loader, model, criterion, log):
 
     for i, (input, target) in enumerate(val_loader):
         if args.use_cuda:
-            target = target.cuda(async=True)
+            target = target.cuda()
             input = input.cuda()
         input_var = torch.autograd.Variable(input, volatile=True)
         target_var = torch.autograd.Variable(target, volatile=True)
@@ -320,7 +331,7 @@ def accuracy(output, target, topk=(1,)):
 
     res = []
     for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
+        correct_k = correct[:k].reshape(-1).float().sum(0)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
